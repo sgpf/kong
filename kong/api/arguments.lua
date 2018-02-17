@@ -59,6 +59,8 @@ end
 
 
 local defaults = {
+  decode        = true,
+  multipart     = true,
   timeout       = 1000,
   chunk_size    = 4096,
   max_uri_args  = 100,
@@ -66,6 +68,9 @@ local defaults = {
   max_line_size = nil,
   max_part_size = nil,
 }
+
+
+defaults.__index = defaults
 
 
 local function escape_unescaped_double_quotes(value)
@@ -161,6 +166,11 @@ local function content_type_boundary(content_type)
 
     else
       boundary = sub(content_type, e + 1)
+    end
+
+    if (sub(boundary, 1, 1) == '"' and sub(boundary, -1)  == '"') or
+       (sub(boundary, 1, 1) == "'" and sub(boundary, -1)  == "'") then
+      boundary = sub(boundary, 2, -2)
     end
   end
 
@@ -518,8 +528,13 @@ local function parse_multipart_header(header, results)
 
   local boundary = find(header, "=", 1, true)
   if boundary then
-    name = sub(header, 2, boundary - 1)
+    name  = sub(header, 2, boundary - 1)
     value = sub(header, boundary + 2, -2)
+
+    if (sub(value, 1, 1) == '"' and sub(value, -1)  == '"') or
+       (sub(value, 1, 1) == "'" and sub(value, -1)  == "'") then
+      value = sub(value, 2, -2)
+    end
 
     if sub(name, -1) == "*" and lower(sub(value, 1, 7)) == "utf-8''" then
       name = sub(name, 1, -2)
@@ -564,25 +579,19 @@ local function parse_multipart_headers(headers)
 end
 
 
-local function parse_multipart(options, content_type)
-  local boundary
-
-  if content_type then
-    boundary = content_type_boundary(content_type)
-  end
-
+local function parse_multipart_stream(options, boundary)
   local part_args = {}
 
-  local max_part_size = options.max_part_size or defaults.max_part_size
-  local max_post_args = options.max_post_args or defaults.max_post_args
-  local chunk_size    = options.chunk_size    or defaults.chunk_size
+  local max_part_size = options.max_part_size
+  local max_post_args = options.max_post_args
+  local chunk_size    = options.chunk_size
 
-  local multipart, err = upload:new(chunk_size, options.max_line_size or defaults.max_line_size)
+  local multipart, err = upload:new(chunk_size, options.max_line_size)
   if not multipart then
     return nil, err
   end
 
-  multipart:set_timeout(options.timeout or defaults.timeout)
+  multipart:set_timeout(options.timeout)
 
   local parts_count = 0
 
@@ -707,19 +716,39 @@ local function parse_multipart(options, content_type)
     end
   end
 
+  multipart:read()
+
   return part_args
 end
 
 
-local function load(options)
-  options = options or defaults
+local function parse_multipart(options, content_type)
+  local boundary
+
+  if content_type then
+    boundary = content_type_boundary(content_type)
+  end
+
+  return parse_multipart_stream(options, boundary)
+end
+
+
+local function load(opts)
+  local options = setmetatable(opts or {}, defaults)
 
   local args  = setmetatable({
     uri  = {},
     post = {},
   }, arguments_mt)
 
-  args.uri = decode(get_uri_args(options.max_uri_args or defaults.max_uri_args))
+  local uargs = get_uri_args(options.max_uri_args)
+
+  if options.decode then
+    args.uri = decode(uargs)
+
+  else
+    args.uri = uargs
+  end
 
   local content_length = ngx.var.content_length
   if content_length then
@@ -749,18 +778,28 @@ local function load(options)
 
   if sub(content_type, 1, 33) == "application/x-www-form-urlencoded" then
     req_read_body()
-    local pargs, err = get_post_args(options.max_post_args or defaults.max_post_args)
+    local pargs, err = get_post_args(options.max_post_args)
     if pargs then
-      args.post = decode(pargs)
+      if options.decode then
+        args.post = decode(pargs)
+
+      else
+        args.post = pargs
+      end
 
     elseif err then
       log(NOTICE, err)
     end
 
-  elseif sub(content_type, 1, 19) == "multipart/form-data" then
+  elseif sub(content_type, 1, 19) == "multipart/form-data" and options.multipart then
     local pargs, err = parse_multipart(options, content_type)
     if pargs then
-      args.post = decode(pargs)
+      if options.decode then
+        args.post = decode(pargs)
+
+      else
+        args.post = pargs
+      end
 
     elseif err then
       log(NOTICE, err)
@@ -781,6 +820,17 @@ local function load(options)
       elseif err then
         log(NOTICE, err)
       end
+    end
+
+  else
+    req_read_body()
+
+    -- we don't support file i/o in case the body is
+    -- buffered to a file, and that is how we want it.
+    local body_data = get_body_data()
+
+    if body_data then
+      args.body = body_data
     end
   end
 

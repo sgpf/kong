@@ -104,6 +104,8 @@ local CONF_INFERENCES = {
 
   proxy_access_log = {typ = "string"},
   proxy_error_log = {typ = "string"},
+  mock_proxy_access_log = {typ = "string"},
+  mock_proxy_error_log = {typ = "string"},
   admin_access_log = {typ = "string"},
   admin_error_log = {typ = "string"},
   log_level = {enum = {"debug", "info", "notice", "warn",
@@ -360,7 +362,9 @@ local function parse_option_flags(value, flags)
 
   value = " " .. value .. " "
 
-  local sanitized = ""
+  local sanitized = {}
+  local sanitized_count = 0
+
   local result = {}
 
   for _, flag in ipairs(flags) do
@@ -371,14 +375,18 @@ local function parse_option_flags(value, flags)
 
     if count > 0 then
       result[flag] = true
-      sanitized = sanitized .. " " .. flag
+
+      if flag ~= "mock" then
+        sanitized_count = sanitized_count + 1
+        sanitized[sanitized_count] = flag
+      end
 
     else
       result[flag] = false
     end
   end
 
-  return pl_stringx.strip(value), result, pl_stringx.strip(sanitized)
+  return pl_stringx.strip(value), result, table.concat(sanitized, " ")
 end
 
 -- Parses a listener address line.
@@ -388,9 +396,15 @@ end
 -- @value list of entries (strings)
 -- @return list of parsed entries, each entry having fields `ip` (normalized string)
 -- `port` (number), `ssl` (bool), `http2` (bool), `listener` (string, full listener)
-local function parse_listeners(values)
-  local list = {}
-  local flags = { "ssl", "http2", "proxy_protocol" }
+local function parse_listeners(values, extra_flags)
+  local list  = {}
+  local flags = { "ssl", "http2" }
+  if extra_flags then
+    for _, flag in ipairs(extra_flags) do
+      table.insert(flags, flag)
+    end
+  end
+
   local usage = "must be of form: [off] | <ip>:<port> [" ..
                 table.concat(flags, "] [") .. "], [... next entry ...]"
 
@@ -551,40 +565,80 @@ local function load(path, custom_conf)
 
   -- extract ports/listen ips
   do
-    local err
     -- this meta table will prevent the parsed table to be passed on in the
     -- intermediate Kong config file in the prefix directory
     local mt = { __tostring = function() return "" end }
-
-    conf.proxy_listeners, err = parse_listeners(conf.proxy_listen)
-    if err then
-      return nil, "proxy_listen " .. err
-    end
-
-    setmetatable(conf.proxy_listeners, mt)  -- do not pass on, parse again
-    conf.proxy_ssl_enabled = false
-
-    for _, listener in ipairs(conf.proxy_listeners) do
-      if listener.ssl == true then
-        conf.proxy_ssl_enabled = true
-        break
-      end
-    end
 
     conf.admin_listeners, err = parse_listeners(conf.admin_listen)
     if err then
       return nil, "admin_listen " .. err
     end
 
-    setmetatable(conf.admin_listeners, mt)  -- do not pass on, parse again
     conf.admin_ssl_enabled = false
-
     for _, listener in ipairs(conf.admin_listeners) do
       if listener.ssl == true then
         conf.admin_ssl_enabled = true
         break
       end
     end
+
+    setmetatable(conf.admin_listeners, mt) -- do not pass on, parse again
+
+    local listeners, err = parse_listeners(conf.proxy_listen, { "proxy_protocol", "mock" })
+    if err then
+      return nil, "proxy_listen " .. err
+    end
+
+    local proxy_listeners        = {}
+    local proxy_ssl_enabled      = false
+    local mock_proxy_listeners   = {}
+    local mock_proxy_ssl_enabled = false
+
+    for _, listener in ipairs(listeners) do
+      if listener.mock then
+        table.insert(mock_proxy_listeners, listener)
+        if listener.ssl == true then
+          mock_proxy_ssl_enabled = true
+        end
+
+      else
+        table.insert(proxy_listeners, listener)
+        if listener.ssl == true then
+          proxy_ssl_enabled = true
+        end
+      end
+    end
+
+    conf.proxy_ssl_enabled = proxy_ssl_enabled or mock_proxy_ssl_enabled
+    conf.proxy_servers = {}
+
+    if #proxy_listeners > 0 then
+      table.insert(conf.proxy_servers, {
+        listeners     = proxy_listeners,
+        ssl_enabled   = proxy_ssl_enabled,
+        server_name   = "kong",
+        upstream_name = "kong_upstream",
+        handler_args  = "",
+        access_log    = conf.proxy_access_log,
+        error_log     = conf.proxy_error_log,
+        mock          = false,
+      })
+    end
+
+    if #mock_proxy_listeners > 0 then
+      table.insert(conf.proxy_servers, {
+        listeners     = mock_proxy_listeners,
+        ssl_enabled   = mock_proxy_ssl_enabled,
+        server_name   = "kong_mock",
+        upstream_name = "kong_mock_upstream",
+        handler_args  = "true",
+        access_log    = conf.mock_proxy_access_log,
+        error_log     = conf.mock_proxy_error_log,
+        mock          = true,
+      })
+    end
+
+    setmetatable(conf.proxy_servers, mt) -- do not pass on, parse again
   end
 
   -- load absolute paths
