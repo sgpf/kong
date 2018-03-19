@@ -632,8 +632,8 @@ return {
   {
     name = "2018-03-15-000000_ssl_certs_add_partition",
     up = function(db, _, _)
-      local unpartitioned_csv = "/tmp/ssl_certificates.csv"
-      local partitioned_csv = "/tmp/partitioned_ssl_certificates.csv"
+      local unpartitioned_csv = "./ssl_certificates.csv"
+      local partitioned_csv = "./partitioned_ssl_certificates.csv"
 
       -- export ssl_certificates table to a temp csv file
       local cql = ("USE KONG; COPY ssl_certificates (id, cert, key, created_at) TO '%s' WITH HEADER=false;")
