@@ -172,6 +172,7 @@ function _M.new(connector, schema, errors)
 
   local each_pk_field
   local each_non_pk_field
+  local is_partitioned = false
 
   do
     local non_pk_fields = new_tab(n_fields - n_pk, 0)
@@ -182,6 +183,9 @@ function _M.new(connector, schema, errors)
       for _, pk_field_name in ipairs(schema.primary_key) do
         if field_name == pk_field_name then
           is_pk = true
+          if field_name == "partition" then
+            is_partitioned = true
+          end
           break
         end
       end
@@ -296,38 +300,60 @@ function _M.new(connector, schema, errors)
     end
   end
 
-  local insert_query = fmt([[
-    INSERT INTO %s(partition, %s) VALUES('%s', %s) IF NOT EXISTS
-  ]], schema.name, insert_columns, schema.name, insert_bind_args)
+  if is_partitioned then
+    self.queries = {
+      insert = fmt([[
+        INSERT INTO %s(partition, %s) VALUES('%s', %s) IF NOT EXISTS
+      ]], schema.name, insert_columns, schema.name, insert_bind_args),
 
-  local select_query = fmt([[
-    SELECT %s FROM %s WHERE partition = '%s' AND %s
-  ]], insert_columns, schema.name, schema.name, select_bind_args)
+      select = fmt([[
+        SELECT %s FROM %s WHERE partition = '%s' AND %s
+      ]], insert_columns, schema.name, schema.name, select_bind_args),
 
-  local select_page_query = fmt([[
-    SELECT %s FROM %s WHERE partition = '%s'
-  ]], insert_columns, schema.name, schema.name)
+      select_page = fmt([[
+        SELECT %s FROM %s WHERE partition = '%s'
+      ]], insert_columns, schema.name, schema.name),
 
-  local select_with_filter = fmt([[
-    SELECT %s FROM %s WHERE partition = '%s' AND %s
-  ]], insert_columns, schema.name, schema.name, "%s")
+      select_with_filter = fmt([[
+        SELECT %s FROM %s WHERE partition = '%s' AND %s
+      ]], insert_columns, schema.name, schema.name, "%s"),
 
-  local update_query = fmt([[
-    UPDATE %s SET %s WHERE partition = '%s' AND %s IF EXISTS
-  ]], schema.name, "%s", schema.name, select_bind_args)
+      update = fmt([[
+        UPDATE %s SET %s WHERE partition = '%s' AND %s IF EXISTS
+      ]], schema.name, "%s", schema.name, select_bind_args),
 
-  local delete_query = fmt([[
-    DELETE FROM %s WHERE partition = '%s' AND %s
-  ]], schema.name, schema.name, select_bind_args)
+      delete = fmt([[
+        DELETE FROM %s WHERE partition = '%s' AND %s
+      ]], schema.name, schema.name, select_bind_args),
+    }
 
-  self.queries = {
-    insert             = insert_query,
-    select             = select_query,
-    select_page        = select_page_query,
-    select_with_filter = select_with_filter,
-    update             = update_query,
-    delete             = delete_query,
-  }
+  else
+    self.queries = {
+      insert = fmt([[
+        INSERT INTO %s(%s) VALUES(%s) IF NOT EXISTS
+      ]], schema.name, insert_columns, insert_bind_args),
+
+      select = fmt([[
+        SELECT %s FROM %s WHERE %s
+      ]], insert_columns, schema.name, select_bind_args),
+
+      select_page = fmt([[
+        SELECT %s FROM %s
+      ]], insert_columns, schema.name),
+
+      select_with_filter = fmt([[
+        SELECT %s FROM %s WHERE %s
+      ]], insert_columns, schema.name, "%s"),
+
+      update = fmt([[
+        UPDATE %s SET %s WHERE %s IF EXISTS
+      ]], schema.name, "%s", select_bind_args),
+
+      delete = fmt([[
+        DELETE FROM %s WHERE %s
+      ]], schema.name, select_bind_args),
+    }
+  end
 
   return setmetatable(self, _mt)
 end
