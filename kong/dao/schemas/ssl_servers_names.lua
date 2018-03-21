@@ -1,5 +1,6 @@
 local db_errors = require "kong.db.errors"
 local Errors = require "kong.dao.errors"
+local utils = require "kong.tools.utils"
 
 return {
   table = "ssl_servers_names",
@@ -33,7 +34,9 @@ return {
 
       if not cert then
         return false,
-               Errors.foreign("no such SSL certificate (id=" .. cert_id .. ")")
+               Errors.foreign(utils.add_error(nil,
+                                              "ssl_certificate_id",
+                                              cert_id))
       end
     end
   end,

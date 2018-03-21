@@ -17,7 +17,7 @@ for _, strategy in helpers.each_strategy() do
 describe("Admin API: #" .. strategy, function()
   local client
 
-  local bp, dao
+  local bp, db, dao
 
   before_each(function()
     client = assert(helpers.admin_client())
@@ -30,7 +30,7 @@ describe("Admin API: #" .. strategy, function()
   end)
 
   setup(function()
-    bp, _, dao = helpers.get_db_utils(strategy)
+    bp, db, dao = helpers.get_db_utils(strategy)
     assert(dao:run_migrations())
 
     assert(helpers.start_kong({
@@ -44,10 +44,9 @@ describe("Admin API: #" .. strategy, function()
 
   describe("/certificates", function()
     before_each(function()
+      assert(db:truncate())
       dao:truncate_tables()
-      local res = assert(client:send {
-        method  = "POST",
-        path    = "/certificates",
+      local res = client:post("/certificates", {
         body    = {
           cert  = ssl_fixtures.cert,
           key   = ssl_fixtures.key,
@@ -55,17 +54,12 @@ describe("Admin API: #" .. strategy, function()
         },
         headers = { ["Content-Type"] = "application/x-www-form-urlencoded" },
       })
-
       assert.res_status(201, res)
     end)
 
     describe("GET", function()
       it("retrieves all certificates", function()
-        local res = assert(client:send {
-          method = "GET",
-          path = "/certificates",
-        })
-
+        local res  = client:get("/certificates")
         local body = assert.res_status(200, res)
         local json = cjson.decode(body)
         assert.equal(1, #json.data)
@@ -76,10 +70,8 @@ describe("Admin API: #" .. strategy, function()
     end)
 
     describe("POST", function()
-      it("returns a conflict when duplicates snis are present in the request", function()
-        local res = assert(client:send {
-          method  = "POST",
-          path    = "/certificates",
+      it("returns a conflict when duplicated snis are present in the request", function()
+        local res = client:post("/certificates", {
           body    = {
             cert  = ssl_fixtures.cert,
             key   = ssl_fixtures.key,
@@ -87,36 +79,25 @@ describe("Admin API: #" .. strategy, function()
           },
           headers = { ["Content-Type"] = "application/x-www-form-urlencoded" },
         })
-
         local body = assert.res_status(409, res)
         local json = cjson.decode(body)
         assert.equals("duplicate SNI in request: foobar.com", json.message)
 
         -- make sure we dont add any snis
-        res = assert(client:send {
-          method  = "GET",
-          path    = "/snis",
-        })
-
+        res  = client:get("/snis")
         body = assert.res_status(200, res)
         json = cjson.decode(body)
         assert.equal(2, #json.data)
 
         -- make sure we didnt add the certificate
-        res = assert(client:send {
-          method = "GET",
-          path = "/certificates",
-        })
-
+        res  = client:get("/certificates")
         body = assert.res_status(200, res)
         json = cjson.decode(body)
         assert.equal(1, #json.data)
       end)
 
       it("returns a conflict when a pre-existing sni is detected", function()
-        local res = assert(client:send {
-          method  = "POST",
-          path    = "/certificates",
+        local res = client:post("/certificates", {
           body    = {
             cert  = ssl_fixtures.cert,
             key   = ssl_fixtures.key,
@@ -124,17 +105,12 @@ describe("Admin API: #" .. strategy, function()
           },
           headers = { ["Content-Type"] = "application/x-www-form-urlencoded" },
         })
-
         local body = assert.res_status(409, res)
         local json = cjson.decode(body)
         assert.equals("SNI already exists: foo.com", json.message)
 
         -- make sure we only have two snis
-        res = assert(client:send {
-          method  = "GET",
-          path    = "/snis",
-        })
-
+        res  = client:get("/snis")
         body = assert.res_status(200, res)
         json = cjson.decode(body)
         assert.equal(2, #json.data)
@@ -142,12 +118,7 @@ describe("Admin API: #" .. strategy, function()
         assert.equal("bar.com", json.data[2].name)
 
         -- make sure we only have one certificate
-        res = assert(client:send {
-          method = "GET",
-          path = "/certificates",
-        })
-
-        body = assert.res_status(200, res)
+        res  = client:get("/certificates") body = assert.res_status(200, res)
         json = cjson.decode(body)
         assert.equal(1, #json.data)
         assert.is_string(json.data[1].cert)
@@ -157,9 +128,7 @@ describe("Admin API: #" .. strategy, function()
 
       it_content_types("creates a certificate", function(content_type)
         return function()
-          local res = assert(client:send {
-            method  = "POST",
-            path    = "/certificates",
+          local res = client:post("/certificates", {
             body    = {
               cert  = ssl_fixtures.cert,
               key   = ssl_fixtures.key,
@@ -178,9 +147,7 @@ describe("Admin API: #" .. strategy, function()
 
       it_content_types("returns snis as [] when none is set", function(content_type)
         return function()
-          local res = assert(client:send {
-            method  = "POST",
-            path    = "/certificates",
+          local res = client:post("/certificates", {
             body    = {
               cert  = ssl_fixtures.cert,
               key   = ssl_fixtures.key,
@@ -202,6 +169,7 @@ describe("Admin API: #" .. strategy, function()
       local cert_bar
 
       before_each(function()
+        assert(db:truncate())
         dao:truncate_tables()
 
         local res = assert(client:send {
@@ -525,6 +493,7 @@ describe("Admin API: #" .. strategy, function()
 
   describe("/certificates/:sni_or_uuid", function()
     before_each(function()
+      assert(db:truncate())
       dao:truncate_tables()
       local res = assert(client:send {
         method  = "POST",
@@ -586,6 +555,7 @@ describe("Admin API: #" .. strategy, function()
       local cert_bar
 
       before_each(function()
+        assert(db:truncate())
         dao:truncate_tables()
 
         local res = assert(client:send {
@@ -933,12 +903,13 @@ describe("Admin API: #" .. strategy, function()
 
       local ssl_certificate
       before_each(function()
+        assert(db:truncate())
         dao:truncate_tables()
 
         ssl_certificate = bp.ssl_certificates:insert()
       end)
 
-      describe("#errors", function()
+      describe("errors", function()
         it("certificate doesn't exist", function()
           local res = assert(client:send {
             method = "POST",
@@ -1000,6 +971,7 @@ describe("Admin API: #" .. strategy, function()
 
     describe("GET", function()
       it("retrieves a SNI", function()
+        assert(db:truncate())
         dao:truncate_tables()
         local ssl_certificate = bp.ssl_certificates:insert()
         bp.ssl_servers_names:insert {
@@ -1025,6 +997,7 @@ describe("Admin API: #" .. strategy, function()
     local ssl_certificate
 
     before_each(function()
+      assert(db:truncate())
       dao:truncate_tables()
       ssl_certificate = bp.ssl_certificates:insert()
       bp.ssl_servers_names:insert {
