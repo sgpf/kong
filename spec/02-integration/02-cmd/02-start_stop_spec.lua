@@ -1,4 +1,6 @@
 local helpers = require "spec.helpers"
+local pl_utils = require "pl.utils"
+local pl_path = require "pl.path"
 
 describe("kong start/stop", function()
   setup(function()
@@ -38,6 +40,102 @@ describe("kong start/stop", function()
   it("start dumps Kong config in prefix", function()
     assert(helpers.kong_exec("start --conf " .. helpers.test_conf_path))
     assert.truthy(helpers.path.exists(helpers.test_conf.kong_env))
+  end)
+  it("start without daemonizing will properly log to stdout/stderr", function()
+    --[[
+    What are we testing exactly?
+    When Kong starts, the cli commands will shell out to start the 'nginx'
+    executable. The stdout/stderr of this command is redirected to be captured
+    in case of errors.
+    A problem arises when Kong runs in the foreground 'nginx_daemon=off', and
+    the nginx log output is set to '/dev/stderr' and '/std/stdout'.
+    In this case the shell command to start Kong will capture all output send
+    to stdout/stderr by nginx. Which causes the tempfiles to grow uncontrolable.
+
+    So when Kong is run in the foreground, no redirects should be used when
+    starting Kong to prevent the above from happening. Or in other words we
+    want the stdout/stderr of the "kong start" command to receive all output
+    of the nginx logs. Instead of them being swallowed by the intermediary
+    nginx start command (used by "kong start" under the hood).
+    --]]
+    local xos = _G.os  -- trick the linter here in accepting global updates
+    local exec = xos.execute
+    local stdout = pl_path.tmpname()
+    local stderr = pl_path.tmpname()
+    -- create a finalizer that will stop Kong and cleanup logfiles
+    finally(function()
+      os.remove(stdout)
+      os.remove(stderr)
+      xos.execute = exec
+      assert(helpers.kong_exec("stop", {
+        prefix = helpers.test_conf.prefix,
+      }))
+    end)
+    -- catch the prepared start command (let the 'helpers' do
+    -- the hard work of building the command)
+    local start_cmd
+    xos.execute = function(cmd) start_cmd = cmd return true end
+    assert(helpers.kong_exec("start", {
+      prefix = helpers.test_conf.prefix,
+      database = helpers.test_conf.database,
+      pg_database = helpers.test_conf.pg_database,
+      cassandra_keyspace = helpers.test_conf.cassandra_keyspace,
+      proxy_listen = "127.0.0.1:" .. helpers.test_conf.proxy_port,
+      admin_listen = "127.0.0.1:" .. helpers.test_conf.admin_port,
+      admin_access_log = "/dev/stdout",
+      admin_error_log = "/dev/stderr",
+      proxy_access_log = "/dev/stdout",
+      proxy_error_log = "/dev/stderr",
+      log_level = "debug",
+      nginx_daemon = "off",
+    }))
+    xos.execute = exec
+    -- remove the stdout/stderr redirects from the captured command
+    -- and insert new ones for us to track
+    start_cmd = start_cmd:match("^(.- bin/kong start).-$")
+    start_cmd = start_cmd .. " > " .. stdout .. " 2> " .. stderr
+    start_cmd = start_cmd .. " &"  -- run it detached
+    -- Now start Kong non-daemonized, but detached
+    assert(pl_utils.execute(start_cmd))
+    -- wait for Kong to be up and running, create a test api
+    helpers.wait_until(function()
+      local success, admin_client = pcall(helpers.admin_client)
+      if not success then
+        --print(admin_client)
+        return false
+      end
+      local res = assert(admin_client:send {
+        method = "POST",
+        path = "/apis",
+        body = {
+          name = "my-api",
+          uris = "/",
+          upstream_url = "http://127.0.0.1:" .. helpers.test_conf.admin_port
+        },
+        headers = {["Content-Type"] = "application/json"}
+      })
+      admin_client:close()
+      --print(res.status)
+      return res.status == 201
+    end, 20)
+    -- make at least 1 succesful proxy request
+    helpers.wait_until(function()
+      -- make a request on the proxy port
+      local proxy_client = helpers.proxy_client()
+      local res = assert(proxy_client:send {
+        method = "GET",
+        path = "/",
+      })
+      proxy_client:close()
+      --print(res.status)
+      return res.status == 200
+    end, 20)
+    -- fetch the log files we set
+    local logout = assert(pl_utils.readfile(stdout))
+    local logerr = assert(pl_utils.readfile(stderr))
+    -- validate that the output contains the expected log messages
+    assert(logerr:find("load_plugins(): Discovering used plugins", 1, true))
+    assert(logout:find('"GET / HTTP/1.1" 200 ', 1, true))
   end)
   it("creates prefix directory if it doesn't exist", function()
     finally(function()
