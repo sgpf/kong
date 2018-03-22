@@ -1,5 +1,6 @@
 local log = require "kong.cmd.utils.log"
 
+local migration_helpers = require "kong.dao.migrations.helpers"
 
 return {
   {
@@ -627,6 +628,16 @@ return {
     up = [[
       CREATE INDEX IF NOT EXISTS ON targets(target);
     ]],
+    down = nil
+  },
+  {
+    name = "2018-03-22-141700_partition_ssl_certificates",
+    up = function(_, _, dao)
+      local _, err = migration_helpers.partition_cassandra_table(dao, "ssl_certificates")
+      if err then
+        return err
+      end
+    end,
     down = nil
   },
 
