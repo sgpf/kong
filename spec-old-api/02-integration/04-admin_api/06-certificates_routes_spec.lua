@@ -14,22 +14,22 @@ local function it_content_types(title, fn)
 end
 
 
-dao_helpers.for_each_dao(function(kong_config)
+for _, strategy in helpers.each_strategy() do
 
-describe("Admin API: #" .. kong_config.database, function()
+describe("Admin API: #" .. strategy, function()
   local client
-  local dao
+  local bp, db, dao
 
   before_each(function()
     client = assert(helpers.admin_client())
   end)
 
   setup(function()
-    dao = assert(DAOFactory.new(kong_config))
+    bp, db, dao = helpers.get_db_utils(strategy)
     assert(dao:run_migrations())
 
     assert(helpers.start_kong({
-      database = kong_config.database
+      database = strategy
     }))
   end)
 
@@ -43,6 +43,7 @@ describe("Admin API: #" .. kong_config.database, function()
 
   describe("/certificates", function()
     before_each(function()
+      assert(db:truncate())
       dao:truncate_tables()
       local res = assert(client:send {
         method  = "POST",
@@ -67,7 +68,6 @@ describe("Admin API: #" .. kong_config.database, function()
 
         local body = assert.res_status(200, res)
         local json = cjson.decode(body)
-        assert.equal(1, json.total)
         assert.equal(1, #json.data)
         assert.is_string(json.data[1].cert)
         assert.is_string(json.data[1].key)
@@ -101,7 +101,6 @@ describe("Admin API: #" .. kong_config.database, function()
         body = assert.res_status(200, res)
         json = cjson.decode(body)
         assert.equal(2, #json.data)
-        assert.equal(2, json.total)
 
         -- make sure we didnt add the certificate
         res = assert(client:send {
@@ -112,7 +111,6 @@ describe("Admin API: #" .. kong_config.database, function()
         body = assert.res_status(200, res)
         json = cjson.decode(body)
         assert.equal(1, #json.data)
-        assert.equal(1, json.total)
       end)
 
       it("returns a conflict when a pre-existing sni is detected", function()
@@ -140,7 +138,6 @@ describe("Admin API: #" .. kong_config.database, function()
         body = assert.res_status(200, res)
         json = cjson.decode(body)
         assert.equal(2, #json.data)
-        assert.equal(2, json.total)
         assert.equal("foo.com", json.data[1].name)
         assert.equal("bar.com", json.data[2].name)
 
@@ -152,7 +149,6 @@ describe("Admin API: #" .. kong_config.database, function()
 
         body = assert.res_status(200, res)
         json = cjson.decode(body)
-        assert.equal(1, json.total)
         assert.equal(1, #json.data)
         assert.is_string(json.data[1].cert)
         assert.is_string(json.data[1].key)
@@ -206,6 +202,7 @@ describe("Admin API: #" .. kong_config.database, function()
       local cert_bar
 
       before_each(function()
+        assert(db:truncate())
         dao:truncate_tables()
 
         local res = assert(client:send {
@@ -263,7 +260,6 @@ describe("Admin API: #" .. kong_config.database, function()
         body = assert.res_status(200, res)
         local json = cjson.decode(body)
         assert.equal(3, #json.data)
-        assert.equal(3, json.total)
 
         -- make sure we added our certificate
         res = assert(client:send {
@@ -274,7 +270,6 @@ describe("Admin API: #" .. kong_config.database, function()
         local body = assert.res_status(200, res)
         local json = cjson.decode(body)
         assert.equal(3, #json.data)
-        assert.equal(3, json.total)
       end)
 
       it("returns 404 for a random non-existing id", function()
@@ -301,7 +296,6 @@ describe("Admin API: #" .. kong_config.database, function()
         local body = assert.res_status(200, res)
         local json = cjson.decode(body)
         assert.equal(2, #json.data)
-        assert.equal(2, json.total)
 
         -- make sure we did not add any certificate
         res = assert(client:send {
@@ -311,83 +305,6 @@ describe("Admin API: #" .. kong_config.database, function()
 
         body = assert.res_status(200, res)
         json = cjson.decode(body)
-        assert.equal(2, json.total)
-        assert.equal(2, #json.data)
-      end)
-
-      it("returns Bad Request if only certificate is specified", function()
-        local res = assert(client:send {
-          method  = "PUT",
-          path    = "/certificates",
-          body    = {
-            id = cert_foo.id,
-            cert  = "cert_foo",
-          },
-          headers = { ["Content-Type"] = "application/x-www-form-urlencoded" },
-        })
-
-        local body = assert.res_status(400, res)
-        local json = cjson.decode(body)
-        assert.equals("key is required", json.key)
-
-        -- make sure we did not add any sni
-        res = assert(client:send {
-          method = "GET",
-          path   = "/snis",
-        })
-
-        local body = assert.res_status(200, res)
-        local json = cjson.decode(body)
-        assert.equal(2, #json.data)
-        assert.equal(2, json.total)
-
-        -- make sure we did not add any certificate
-        res = assert(client:send {
-          method = "GET",
-          path = "/certificates",
-        })
-
-        body = assert.res_status(200, res)
-        json = cjson.decode(body)
-        assert.equal(2, json.total)
-        assert.equal(2, #json.data)
-      end)
-
-      it("returns Bad Request if only key is specified", function()
-        local res = assert(client:send {
-          method  = "PUT",
-          path    = "/certificates",
-          body    = {
-            id = cert_foo.id,
-            key  = "key_foo",
-          },
-          headers = { ["Content-Type"] = "application/x-www-form-urlencoded" },
-        })
-
-        local body = assert.res_status(400, res)
-        local json = cjson.decode(body)
-        assert.equals("cert is required", json.cert)
-
-        -- make sure we did not add any sni
-        res = assert(client:send {
-          method  = "GET",
-          path    = "/snis",
-        })
-
-        local body = assert.res_status(200, res)
-        local json = cjson.decode(body)
-        assert.equal(2, #json.data)
-        assert.equal(2, json.total)
-
-        -- make sure we did not add any certificate
-        res = assert(client:send {
-          method = "GET",
-          path = "/certificates",
-        })
-
-        body = assert.res_status(200, res)
-        json = cjson.decode(body)
-        assert.equal(2, json.total)
         assert.equal(2, #json.data)
       end)
 
@@ -417,7 +334,6 @@ describe("Admin API: #" .. kong_config.database, function()
         body = assert.res_status(200, res)
         json = cjson.decode(body)
         assert.equal(2, #json.data)
-        assert.equal(2, json.total)
         local sni_names = {}
         table.insert(sni_names, json.data[1].name)
         table.insert(sni_names, json.data[2].name)
@@ -431,7 +347,6 @@ describe("Admin API: #" .. kong_config.database, function()
 
         body = assert.res_status(200, res)
         json = cjson.decode(body)
-        assert.equal(2, json.total)
         assert.equal(2, #json.data)
       end)
 
@@ -475,7 +390,6 @@ describe("Admin API: #" .. kong_config.database, function()
         body = assert.res_status(200, res)
         json = cjson.decode(body)
         assert.equal(2, #json.data)
-        assert.equal(2, json.total)
 
         -- make sure we did not add any certificate
         res = assert(client:send {
@@ -485,7 +399,6 @@ describe("Admin API: #" .. kong_config.database, function()
 
         body = assert.res_status(200, res)
         json = cjson.decode(body)
-        assert.equal(2, json.total)
         assert.equal(2, #json.data)
       end)
 
@@ -514,7 +427,6 @@ describe("Admin API: #" .. kong_config.database, function()
         body = assert.res_status(200, res)
         json = cjson.decode(body)
         assert.equal(2, #json.data)
-        assert.equal(2, json.total)
 
         -- make sure we did not add any certificate
         res = assert(client:send {
@@ -524,7 +436,6 @@ describe("Admin API: #" .. kong_config.database, function()
 
         body = assert.res_status(200, res)
         json = cjson.decode(body)
-        assert.equal(2, json.total)
         assert.equal(2, #json.data)
       end)
 
@@ -556,7 +467,6 @@ describe("Admin API: #" .. kong_config.database, function()
         body = assert.res_status(200, res)
         json = cjson.decode(body)
         assert.equal(2, #json.data)
-        assert.equal(2, json.total)
 
         -- make sure we did not add any certificate
         res = assert(client:send {
@@ -566,7 +476,6 @@ describe("Admin API: #" .. kong_config.database, function()
 
         body = assert.res_status(200, res)
         json = cjson.decode(body)
-        assert.equal(2, json.total)
         assert.equal(2, #json.data)
       end)
 
@@ -600,7 +509,6 @@ describe("Admin API: #" .. kong_config.database, function()
         body = assert.res_status(200, res)
         json = cjson.decode(body)
         assert.equal(1, #json.data)
-        assert.equal(1, json.total)
         assert.equal("foo.com", json.data[1].name)
 
         -- make sure we did not add any certificate
@@ -611,7 +519,6 @@ describe("Admin API: #" .. kong_config.database, function()
 
         body = assert.res_status(200, res)
         json = cjson.decode(body)
-        assert.equal(2, json.total)
         assert.equal(2, #json.data)
       end)
     end)
@@ -619,6 +526,7 @@ describe("Admin API: #" .. kong_config.database, function()
 
   describe("/certificates/:sni_or_uuid", function()
     before_each(function()
+      assert(db:truncate())
       dao:truncate_tables()
       local res = assert(client:send {
         method  = "POST",
@@ -664,6 +572,7 @@ describe("Admin API: #" .. kong_config.database, function()
       local cert_bar
 
       before_each(function()
+        assert(db:truncate())
         dao:truncate_tables()
 
         local res = assert(client:send {
@@ -735,7 +644,6 @@ describe("Admin API: #" .. kong_config.database, function()
         local body = assert.res_status(200, res)
         local json = cjson.decode(body)
         assert.equal(2, #json.data)
-        assert.equal(2, json.total)
 
         -- make sure we did not add any certificate
         res = assert(client:send {
@@ -745,81 +653,6 @@ describe("Admin API: #" .. kong_config.database, function()
 
         body = assert.res_status(200, res)
         json = cjson.decode(body)
-        assert.equal(2, json.total)
-        assert.equal(2, #json.data)
-      end)
-
-      it("returns Bad Request if only certificate is specified", function()
-        local res = assert(client:send {
-          method  = "PATCH",
-          path    = "/certificates/" .. cert_foo.id,
-          body    = {
-            cert  = "cert_foo",
-          },
-          headers = { ["Content-Type"] = "application/x-www-form-urlencoded" },
-        })
-
-        local body = assert.res_status(400, res)
-        local json = cjson.decode(body)
-        assert.equals("key is required", json.key)
-
-        -- make sure we did not add any sni
-        res = assert(client:send {
-          method  = "GET",
-          path    = "/snis",
-        })
-
-        local body = assert.res_status(200, res)
-        local json = cjson.decode(body)
-        assert.equal(2, #json.data)
-        assert.equal(2, json.total)
-
-        -- make sure we did not add any certificate
-        res = assert(client:send {
-          method = "GET",
-          path = "/certificates",
-        })
-
-        body = assert.res_status(200, res)
-        json = cjson.decode(body)
-        assert.equal(2, json.total)
-        assert.equal(2, #json.data)
-      end)
-
-      it("returns Bad Request if only key is specified", function()
-        local res = assert(client:send {
-          method  = "PATCH",
-          path    = "/certificates/" .. cert_foo.id,
-          body    = {
-            key  = "key_foo",
-          },
-          headers = { ["Content-Type"] = "application/x-www-form-urlencoded" },
-        })
-
-        local body = assert.res_status(400, res)
-        local json = cjson.decode(body)
-        assert.equals("cert is required", json.cert)
-
-        -- make sure we did not add any sni
-        res = assert(client:send {
-          method  = "GET",
-          path    = "/snis",
-        })
-
-        local body = assert.res_status(200, res)
-        local json = cjson.decode(body)
-        assert.equal(2, #json.data)
-        assert.equal(2, json.total)
-
-        -- make sure we did not add any certificate
-        res = assert(client:send {
-          method = "GET",
-          path = "/certificates",
-        })
-
-        body = assert.res_status(200, res)
-        json = cjson.decode(body)
-        assert.equal(2, json.total)
         assert.equal(2, #json.data)
       end)
 
@@ -848,7 +681,6 @@ describe("Admin API: #" .. kong_config.database, function()
         body = assert.res_status(200, res)
         json = cjson.decode(body)
         assert.equal(2, #json.data)
-        assert.equal(2, json.total)
         local sni_names = {}
         table.insert(sni_names, json.data[1].name)
         table.insert(sni_names, json.data[2].name)
@@ -862,7 +694,6 @@ describe("Admin API: #" .. kong_config.database, function()
 
         body = assert.res_status(200, res)
         json = cjson.decode(body)
-        assert.equal(2, json.total)
         assert.equal(2, #json.data)
       end)
 
@@ -905,7 +736,6 @@ describe("Admin API: #" .. kong_config.database, function()
         body = assert.res_status(200, res)
         json = cjson.decode(body)
         assert.equal(2, #json.data)
-        assert.equal(2, json.total)
 
         -- make sure we did not add any certificate
         res = assert(client:send {
@@ -915,7 +745,6 @@ describe("Admin API: #" .. kong_config.database, function()
 
         body = assert.res_status(200, res)
         json = cjson.decode(body)
-        assert.equal(2, json.total)
         assert.equal(2, #json.data)
       end)
 
@@ -943,7 +772,6 @@ describe("Admin API: #" .. kong_config.database, function()
         body = assert.res_status(200, res)
         json = cjson.decode(body)
         assert.equal(2, #json.data)
-        assert.equal(2, json.total)
 
         -- make sure we did not add any certificate
         res = assert(client:send {
@@ -953,7 +781,6 @@ describe("Admin API: #" .. kong_config.database, function()
 
         body = assert.res_status(200, res)
         json = cjson.decode(body)
-        assert.equal(2, json.total)
         assert.equal(2, #json.data)
       end)
 
@@ -984,7 +811,6 @@ describe("Admin API: #" .. kong_config.database, function()
         body = assert.res_status(200, res)
         json = cjson.decode(body)
         assert.equal(2, #json.data)
-        assert.equal(2, json.total)
 
         -- make sure we did not add any certificate
         res = assert(client:send {
@@ -994,7 +820,6 @@ describe("Admin API: #" .. kong_config.database, function()
 
         body = assert.res_status(200, res)
         json = cjson.decode(body)
-        assert.equal(2, json.total)
         assert.equal(2, #json.data)
       end)
 
@@ -1027,7 +852,6 @@ describe("Admin API: #" .. kong_config.database, function()
         body = assert.res_status(200, res)
         json = cjson.decode(body)
         assert.equal(1, #json.data)
-        assert.equal(1, json.total)
         assert.equal("foo.com", json.data[1].name)
 
         -- make sure we did not add any certificate
@@ -1038,7 +862,6 @@ describe("Admin API: #" .. kong_config.database, function()
 
         body = assert.res_status(200, res)
         json = cjson.decode(body)
-        assert.equal(2, json.total)
         assert.equal(2, #json.data)
       end)
     end)
@@ -1096,25 +919,27 @@ describe("Admin API: #" .. kong_config.database, function()
     local ssl_certificate
 
     before_each(function()
+      assert(db:truncate())
       dao:truncate_tables()
-      ssl_certificate = assert(dao.ssl_certificates:insert {
+      ssl_certificate = bp.ssl_certificates:insert {
         cert = ssl_fixtures.cert,
         key = ssl_fixtures.key,
-      })
-      assert(dao.ssl_servers_names:insert {
+      }
+      bp.ssl_servers_names:insert {
           name               = "foo.com",
           ssl_certificate_id = ssl_certificate.id,
-      })
+      }
     end)
 
     describe("POST", function()
       before_each(function()
+        assert(db:truncate())
         dao:truncate_tables()
 
-        ssl_certificate = assert(dao.ssl_certificates:insert {
+        ssl_certificate = bp.ssl_certificates:insert {
           cert = ssl_fixtures.cert,
           key = ssl_fixtures.key,
-        })
+        }
       end)
 
       describe("errors", function()
@@ -1156,10 +981,10 @@ describe("Admin API: #" .. kong_config.database, function()
       end)
 
       it("returns a conflict when an SNI already exists", function()
-          assert(dao.ssl_servers_names:insert {
+          bp.ssl_servers_names:insert {
             name = "foo.com",
             ssl_certificate_id = ssl_certificate.id,
-          })
+          }
 
           local res = assert(client:send {
             method  = "POST",
@@ -1187,7 +1012,6 @@ describe("Admin API: #" .. kong_config.database, function()
         local body = assert.res_status(200, res)
         local json = cjson.decode(body)
         assert.equal(1, #json.data)
-        assert.equal(1, json.total)
         assert.equal("foo.com", json.data[1].name)
         assert.equal(ssl_certificate.id, json.data[1].ssl_certificate_id)
       end)
@@ -1198,15 +1022,16 @@ describe("Admin API: #" .. kong_config.database, function()
     local ssl_certificate
 
     before_each(function()
+      assert(db:truncate())
       dao:truncate_tables()
-      ssl_certificate = assert(dao.ssl_certificates:insert {
+      ssl_certificate = bp.ssl_certificates:insert {
         cert = ssl_fixtures.cert,
         key = ssl_fixtures.key,
-      })
-      assert(dao.ssl_servers_names:insert {
+      }
+      bp.ssl_servers_names:insert {
           name               = "foo.com",
           ssl_certificate_id = ssl_certificate.id,
-      })
+      }
     end)
 
     describe("GET", function()
@@ -1226,7 +1051,7 @@ describe("Admin API: #" .. kong_config.database, function()
     describe("PATCH", function()
       do
         local test = it
-        if kong_config.database == "cassandra" then
+        if strategy == "cassandra" then
           test = pending
         end
 
@@ -1237,10 +1062,10 @@ describe("Admin API: #" .. kong_config.database, function()
           -- ssl_certificate_id field because it is in the `SET` part of the
           -- query built by the DAO, but in C*, one cannot change a value
           -- from the clustering key.
-          local ssl_certificate_2 = assert(dao.ssl_certificates:insert {
+          local ssl_certificate_2 = bp.ssl_certificates:insert {
             cert = "foo",
             key = "bar",
-          })
+          }
 
           local res = assert(client:send {
             method  = "PATCH",
@@ -1271,4 +1096,4 @@ describe("Admin API: #" .. kong_config.database, function()
   end)
 end)
 
-end)
+end
